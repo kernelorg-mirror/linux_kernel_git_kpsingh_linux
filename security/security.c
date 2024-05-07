@@ -407,8 +407,7 @@ static void __init lsm_static_call_init(struct security_hook_list *hl)
 			__static_call_update(scall->key, scall->trampoline,
 					     hl->hook.lsm_func_addr);
 			scall->hl = hl;
-			if (hl->default_enabled)
-				static_branch_enable(scall->active);
+			static_branch_enable(scall->active);
 			return;
 		}
 		scall++;
@@ -886,36 +885,6 @@ out:
 	return rc;
 }
 
-/**
- * security_toggle_hook - Toggle the state of the LSM hook.
- * @hook_addr: The address of the hook to be toggled.
- * @state: Whether to enable for disable the hook.
- *
- * Returns 0 on success, -EINVAL if the address is not found.
- */
-int security_toggle_hook(void *hook_addr, bool state)
-{
-	struct lsm_static_call *scalls = ((void *)&static_calls_table);
-	unsigned long num_entries =
-		(sizeof(static_calls_table) / sizeof(struct lsm_static_call));
-	int i;
-
-	for (i = 0; i < num_entries; i++) {
-		if (!scalls[i].hl)
-			continue;
-
-		if (scalls[i].hl->hook.lsm_func_addr != hook_addr)
-			continue;
-
-		if (state)
-			static_branch_enable(scalls[i].active);
-		else
-			static_branch_disable(scalls[i].active);
-		return 0;
-	}
-	return -EINVAL;
-}
-
 /*
  * The default value of the LSM hook is defined in linux/lsm_hook_defs.h and
  * can be accessed with:
@@ -980,34 +949,31 @@ out:									\
  * Can be used in the context passed to lsm_for_each_hook to get the lsmid of the
  * current hook
  */
-#define current_lsmid() _hook_lsmid
+#define current_lsmid() (static_calls_table.HOOK[NUM].hl->lsmid->id)
+#define __current_hook(...) current_hook(__VA_ARGS__)
+#define current_hook(...) (static_call(LSM_STATIC_CALL(HOOK, NUM))(__VA_ARGS__))
 
-#define __CALL_HOOK(NUM, HOOK, RC, BODY_BEFORE, BODY_AFTER, ...)	     \
+#define __CALL_HOOK(NUM, HOOK, BODY)	     				     \
 do {									     \
-	int __maybe_unused _hook_lsmid;					     \
-									     \
 	if (static_branch_unlikely(&SECURITY_HOOK_ACTIVE_KEY(HOOK, NUM))) {  \
-		_hook_lsmid = static_calls_table.HOOK[NUM].hl->lsmid->id;    \
-		BODY_BEFORE						     \
-		RC = static_call(LSM_STATIC_CALL(HOOK, NUM))(__VA_ARGS__);   \
-		BODY_AFTER						     \
+		BODY						     	     \
 	}								     \
 } while (0);
 
-#define lsm_for_each_hook(HOOK, RC, BODY, ...)	\
-	LSM_LOOP_UNROLL(__CALL_HOOK, HOOK, RC, ;, BODY, __VA_ARGS__)
+#define lsm_for_each_hook(HOOK, RC, BODY)	\
+	LSM_LOOP_UNROLL(__CALL_HOOK, HOOK, RC, BODY)
 
 #define call_hook_with_lsmid(HOOK, LSMID, ...)				\
 ({									\
 	__label__ out;							\
 	int RC = LSM_RET_DEFAULT(HOOK);					\
 									\
-	LSM_LOOP_UNROLL(__CALL_HOOK, HOOK, RC, {			\
+	LSM_LOOP_UNROLL(__CALL_HOOK, HOOK, {			\
 		if (current_lsmid() != LSMID)				\
 			continue;					\
-	}, {								\
+		RC = __current_hook(__VA_ARGS__);				\
 		goto out;						\
-	}, __VA_ARGS__);						\
+	})l								\
 out:									\
 	RC;								\
 })
